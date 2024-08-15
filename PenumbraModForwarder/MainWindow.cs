@@ -14,7 +14,6 @@ using FFXIVModExractor.Models;
 using FFXIVModExractor.Services;
 using PenumbraModForwarder.Services;
 
-// TODO: Rename to FFXIVModExtractor
 namespace FFXIVModExractor
 {
     public partial class MainWindow : Form
@@ -26,6 +25,9 @@ namespace FFXIVModExractor
 
         public MainWindow()
         {
+            // Before we start let's just migrate the settings
+            Options.MigrateOldSettings();
+
             InitializeComponent();
             GetDownloadPath();
             AutoScaleDimensions = new SizeF(96, 96);
@@ -181,10 +183,11 @@ namespace FFXIVModExractor
                     if (autoLoadModCheckbox.Checked)
                     {
                         hideAfterLoad = true;
-                    }
 
-                    // We will set the checkboxes here for now, this could be done better in the future.
-                    AutoDelete.Checked = Convert.ToBoolean(Options.ReadFromConfig("AutoDelete").Value);
+                        var config = Options.GetConfigValue<bool>("AutoDelete");
+                        AutoDelete.Enabled = true;
+                        AutoDelete.Checked = config;
+                    }                    
                 }
                 else
                 {
@@ -223,7 +226,8 @@ namespace FFXIVModExractor
                     finalModPath = modPackPath;
                     trayIcon.BalloonTipText = "Mod pack was not converted to Dawntrail, or is already Dawntrail Compatible";
                     trayIcon.ShowBalloonTip(5000);
-                    FileHandler.DeleteDirectory(finalModPath);
+                    // Attempt to delete the Dawntrail Converted Folder after we're done with it
+                    FileHandler.DeleteDirectory(Path.Combine(originatingModDirectory, @"Dawntrail Converted\"));
                 }
             }
             PenumbraHttpApi.OpenWindow();
@@ -352,7 +356,7 @@ namespace FFXIVModExractor
             else if (e.FullPath.EndsWith(".7z") || e.FullPath.EndsWith(".rar") || e.FullPath.EndsWith(".zip"))
             {
                 await FileHandler.WaitForFileRelease(e.FullPath);
-                List<string> extractedMods = new List<string>();
+                List<string> extractedMods = new();
 
                 try
                 {
@@ -369,19 +373,16 @@ namespace FFXIVModExractor
                                 string tempOutputPath = Path.Combine(Path.GetDirectoryName(e.FullPath), fileName);
 
                                 // Extract the file to a flat path
-                                using (FileStream outputFileStream = new FileStream(tempOutputPath, FileMode.Create, FileAccess.Write))
-                                {
-                                    int index = archive.ArchiveFileNames.IndexOf(item);
-                                    archive.ExtractFile(index, outputFileStream);
-                                    extractedMods.Add(tempOutputPath);
-                                }
+                                using FileStream outputFileStream = new(tempOutputPath, FileMode.Create, FileAccess.Write);
+                                int index = archive.ArchiveFileNames.IndexOf(item);
+                                archive.ExtractFile(index, outputFileStream);
+                                extractedMods.Add(tempOutputPath);
                             }
                         }
                     }
                 }
                 catch (Exception ex)
                 {
-                    // Log the error as needed
                     string error = ex.Message;
                 }
 
@@ -400,10 +401,8 @@ namespace FFXIVModExractor
         {
             try
             {
-                using (FileStream stream = File.Open(file, FileMode.Open, FileAccess.Read, FileShare.None))
-                {
-                    stream.Close();
-                }
+                using FileStream stream = File.Open(file, FileMode.Open, FileAccess.Read, FileShare.None);
+                stream.Close();
             }
             catch (IOException)
             {
@@ -418,34 +417,29 @@ namespace FFXIVModExractor
             return false;
         }
 
-        // TODO: This will need to be removed in favour of the new Options class
         public void GetDownloadPath()
         {
-            string downloadPath = Options.ReadFromConfig("DownloadPath").Value;
-            if (!string.IsNullOrEmpty(downloadPath))
+            string downloadPath = Options.GetConfigValue<string>("DownloadPath");
+            if (downloadPath != null)
             {
                 downloads.CurrentPath = downloadPath;
-                fileSystemWatcher.Path = downloads.FilePath.Text;
+                fileSystemWatcher.Path = downloadPath;
             }
         }
 
-        // TODO: This will need to be removed in favour of the new Options class
         public void WriteDownloadPath(string path)
         {
-            Options.WriteToConfig(new Config()
+            Options.UpdateConfig(config =>
             {
-                Option = "DownloadPath",
-                Value = path
+                config.DownloadPath = path;
             });
         }
 
-        // TODO: This will need to be removed in favour of the new Options class
         public void WriteTexToolsPath(string path)
         {
-            Options.WriteToConfig(new Config()
+            Options.UpdateConfig(config =>
             {
-                Option = "TexToolsPath",
-                Value = path
+                config.TexToolPath = path;
             });
         }
 
@@ -455,28 +449,20 @@ namespace FFXIVModExractor
             FileReg.CreateSubKey("shell\\open\\command").SetValue("", $"\"{applicationPath}\" \"%1\"");
             FileReg.Close();
 
-            SHChangeNotify(0x08000000, 0x0000, IntPtr.Zero, IntPtr.Zero);
+            Imports.SHChangeNotify(0x08000000, 0x0000, IntPtr.Zero, IntPtr.Zero);
         }
-        [DllImport("shell32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-        public static extern void SHChangeNotify(uint wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);
 
-        // TODO: This will need to be removed in favour of the new Options class
         public void GetAutoLoadOption()
         {
-            var option = Options.ReadFromConfig("AutoLoad").Value;
-            if (!string.IsNullOrEmpty(option))
-            {
-                autoLoadModCheckbox.Checked = bool.Parse(option);
-            }
+            var option = Options.GetConfigValue<bool>("AutoLoad");
+            autoLoadModCheckbox.Checked = option;
         }
 
-        // TODO: This will need to be removed in favour of the new Options class
         public void WriteAutoLoadOption(bool option)
         {
-            Options.WriteToConfig(new Config()
+            Options.UpdateConfig(config =>
             {
-                Option = "AutoLoad",
-                Value = option.ToString()
+                config.AutoLoad = option;
             });
         }
 
@@ -489,6 +475,7 @@ namespace FFXIVModExractor
         {
             downloads.Enabled = autoLoadModCheckbox.Checked;
             trayIcon.Visible = autoLoadModCheckbox.Checked;
+            AutoDelete.Enabled = autoLoadModCheckbox.Checked;
             RegistryKey rk = Registry.CurrentUser.OpenSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", true);
             if (autoLoadModCheckbox.Checked)
             {
@@ -499,16 +486,22 @@ namespace FFXIVModExractor
             else
             {
                 rk.DeleteValue(Text, false);
+
+                // Just force set auto delete setting to false
+                Options.UpdateConfig(config =>
+                {
+                    config.AutoDelete = autoLoadModCheckbox.Checked;
+                });
+                AutoDelete.Checked = autoLoadModCheckbox.Checked;
             }
             WriteAutoLoadOption(autoLoadModCheckbox.Checked);
         }
 
         private void AutoDelete_CheckedChanged(object sender, EventArgs e)
         {
-            Options.WriteToConfig(new Config()
+            Options.UpdateConfig(config =>
             {
-                Option = "AutoDelete",
-                Value = AutoDelete.Checked.ToString()
+                config.AutoDelete = AutoDelete.Checked;
             });
         }
 
